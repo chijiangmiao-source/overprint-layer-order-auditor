@@ -92,49 +92,52 @@ def collect_semantic_errors(data: Any) -> List[ValidationErrorItem]:
     raw_layers = data.get("layers")
     raw_observations = data.get("observations")
 
+    # Every string actually listed as a layer, even if it fails the id
+    # pattern. Referencing such an entry is not "dangling" -- its format is
+    # already reported at /layers/i -- whereas referencing anything not
+    # listed at all is a dangling reference.
+    listed: set[str] = set()
+
     # ---- layers -----------------------------------------------------------
     if not isinstance(raw_layers, list):
         # Missing / wrong-typed `layers` is already reported by Pydantic;
-        # nothing semantic can be derived without it.
-        return errors
-
-    if not (MIN_LAYERS <= len(raw_layers) <= MAX_LAYERS):
-        errors.append(
-            ValidationErrorItem(
-                pointer=_pointer(["layers"]),
-                message=f"number of layers must be between {MIN_LAYERS} and {MAX_LAYERS}",
-            )
-        )
-    seen: dict[str, int] = {}
-    for i, raw_id in enumerate(raw_layers):
-        if not isinstance(raw_id, str):
-            continue  # type error reported by Pydantic
-        if not ID_PATTERN.match(raw_id):
+        # observation checks still run independently below.
+        pass
+    else:
+        if not (MIN_LAYERS <= len(raw_layers) <= MAX_LAYERS):
             errors.append(
                 ValidationErrorItem(
-                    pointer=_pointer(["layers", i]),
-                    message="layer id must match [A-Za-z0-9_-]{1,24}",
+                    pointer=_pointer(["layers"]),
+                    message=f"number of layers must be between {MIN_LAYERS} and {MAX_LAYERS}",
                 )
             )
-            continue
-        if raw_id in seen:
-            errors.append(
-                ValidationErrorItem(
-                    pointer=_pointer(["layers", i]),
-                    message=f"duplicate layer id {raw_id!r}; first seen at index {seen[raw_id]}",
+        seen: dict[str, int] = {}
+        for i, raw_id in enumerate(raw_layers):
+            if not isinstance(raw_id, str):
+                continue  # type error reported by Pydantic
+            listed.add(raw_id)
+            if not ID_PATTERN.match(raw_id):
+                errors.append(
+                    ValidationErrorItem(
+                        pointer=_pointer(["layers", i]),
+                        message="layer id must match [A-Za-z0-9_-]{1,24}",
+                    )
                 )
-            )
-        else:
-            seen[raw_id] = i
+                continue
+            if raw_id in seen:
+                errors.append(
+                    ValidationErrorItem(
+                        pointer=_pointer(["layers", i]),
+                        message=f"duplicate layer id {raw_id!r}; first seen at index {seen[raw_id]}",
+                    )
+                )
+            else:
+                seen[raw_id] = i
 
     # ---- observations -----------------------------------------------------
-    raw_observations = data.get("observations")
-
-    # Without a well-formed layer list, dangling/self/duplicate checks
-    # would only add noise on top of the already-reported `layers` errors.
-    if not isinstance(raw_layers, list):
-        return errors
-
+    # Independent of the layers checks: an empty/missing observation list
+    # (and bad references inside it) must be reported even when `layers`
+    # itself is invalid, so a single bad response never hides errors.
     if not isinstance(raw_observations, list):
         return errors  # type error reported by Pydantic
 
@@ -154,8 +157,8 @@ def collect_semantic_errors(data: Any) -> List[ValidationErrorItem]:
         upper = raw_obs.get("upper")
         if not isinstance(lower, str) or not isinstance(upper, str):
             continue
-        lower_ok = lower in seen
-        upper_ok = upper in seen
+        lower_ok = lower in listed
+        upper_ok = upper in listed
         if not lower_ok:
             errors.append(
                 ValidationErrorItem(

@@ -166,6 +166,25 @@ def main() -> int:
             check(f"reported {needed}", needed in pointers, joined)
         check("all defects in a single response", len(pointers) >= 7, str(pointers))
 
+    print("== 5b. invalid layers must not hide observation errors ==")
+    status, data = post_json(f"{WEB_BASE}/api/solve", {"observations": []})
+    check("missing layers + empty obs -> 422", status == 422, str(status))
+    if status == 422:
+        pointers = [e["pointer"] for e in data["errors"]]
+        check("both /layers and /observations reported together",
+              "/layers" in pointers and "/observations" in pointers, str(pointers))
+        check("still pointer-sorted", pointers == sorted(pointers), str(pointers))
+
+    status, data = post_json(
+        f"{WEB_BASE}/api/solve",
+        {"observations": [{"lower": "X", "upper": "Y", "weight": 1}]},
+    )
+    if status == 422:
+        pointers = [e["pointer"] for e in data["errors"]]
+        check("dangling refs reported without any layer universe",
+              "/observations/0/lower" in pointers and "/observations/0/upper" in pointers,
+              str(pointers))
+
     print("== 6. input reordering leaves state/cost/canonical witness unchanged ==")
     shuffled = {"layers": ["D", "A", "C", "B"],
                 "observations": list(reversed(GREEDY_TRAP["observations"]))}

@@ -112,6 +112,51 @@ def test_empty_observations_is_invalid():
     assert r.json()["errors"][0]["pointer"] == "/observations"
 
 
+def test_errors_are_not_dropped_when_layers_also_invalid():
+    # Regression: an invalid `layers` field must not hide the empty-list
+    # error on `observations`, and vice versa.
+    r = post({"observations": []})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/layers" in pointers
+    assert "/observations" in pointers
+    assert pointers == sorted(pointers)
+
+    r = post({"layers": "not-a-list", "observations": []})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/layers" in pointers
+    assert "/observations" in pointers
+
+    # Wrong layer COUNT plus empty observations must both surface.
+    r = post({"layers": ["A"], "observations": []})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/layers" in pointers and "/observations" in pointers
+
+
+def test_dangling_reports_even_without_valid_layer_universe():
+    # Dangling references must be reported even when `layers` is missing;
+    # no valid layer universe is required to know these ids are absent.
+    r = post({"observations": [{"lower": "X", "upper": "Y", "weight": 1}]})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/layers" in pointers
+    assert "/observations/0/lower" in pointers
+    assert "/observations/0/upper" in pointers
+
+
+def test_malformed_listed_id_is_not_also_reported_as_dangling():
+    # "bad id" IS listed (fails the id pattern at /layers/0); referencing it
+    # must not add a redundant dangling-reference error.
+    r = post({"layers": ["bad id", "B"],
+              "observations": [{"lower": "bad id", "upper": "B", "weight": 1}]})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert pointers == ["/layers/0"]
+
+    # A truly unlisted id alongside a malformed listed id is still dangling.
+    r = post({"layers": ["bad id", "B"],
+              "observations": [{"lower": "bad id", "upper": "ghost", "weight": 1}]})
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert pointers == ["/layers/0", "/observations/0/upper"]
+
+
 @pytest.mark.parametrize("count", [0, 1, 21])
 def test_layer_count_bounds(count):
     r = post({"layers": [f"L{i}" for i in range(count)],

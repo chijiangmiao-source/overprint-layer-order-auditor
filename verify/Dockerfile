@@ -5,7 +5,7 @@ FROM python:3.11-slim
 
 WORKDIR /verify
 
-COPY backend/requirements-dev.txt ./requirements-dev.txt
+COPY backend/requirements.txt backend/requirements-dev.txt ./
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
 COPY backend/app ./app

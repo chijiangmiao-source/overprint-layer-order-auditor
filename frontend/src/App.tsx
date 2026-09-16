@@ -1,8 +1,15 @@
-import { useMemo, useState } from "react";
-import { solveProblem, SolveError } from "./api";
-import type { ObservationInput, SolutionResponse } from "./types";
+import { useMemo, useRef, useState } from "react";
+import { fetchPlacementProfile, solveProblem, SolveError } from "./api";
+import type {
+  ObservationInput,
+  PlacementProfileResponse,
+  ProblemPayload,
+  SolutionResponse,
+  ValidationErrorItem,
+} from "./types";
 import StackTrack from "./components/StackTrack";
 import ObservationTable from "./components/ObservationTable";
+import ProfilePanel from "./components/ProfilePanel";
 
 interface ObservationDraft {
   lower: string;
@@ -39,6 +46,19 @@ export default function App() {
   const [result, setResult] = useState<SolutionResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [networkError, setNetworkError] = useState<string | null>(null);
+
+  // Exact payload of the last successful solve; the profile endpoint is
+  // invoked with these original ProblemIn fields plus the clicked target.
+  const [submittedPayload, setSubmittedPayload] = useState<ProblemPayload | null>(null);
+
+  // Derived placement-profile region; independent of the solve witness so
+  // profile loading/errors never touch the original audit result.
+  const [profileTarget, setProfileTarget] = useState<string | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileData, setProfileData] = useState<PlacementProfileResponse | null>(null);
+  const [profileErrors, setProfileErrors] = useState<ValidationErrorItem[] | null>(null);
+  // Latest click wins if two profile requests are in flight.
+  const profileSeq = useRef(0);
 
   // Parsed layers are derived state, so reordering/editing cannot leave a
   // stale derived copy behind.
@@ -112,15 +132,22 @@ export default function App() {
   const handleSubmit = async () => {
     setLoading(true);
     // Any (re-)submission first clears stale output and stale errors: an
-    // invalid answer never leaves an old optimum on screen.
+    // invalid answer never leaves an old optimum on screen. The derived
+    // profile belongs to the previous witness, so it is cleared as well
+    // (a fresh successful solve never carries an old target's profile).
     setResult(null);
+    setSubmittedPayload(null);
+    setProfileTarget(null);
+    setProfileData(null);
+    setProfileErrors(null);
+    setProfileLoading(false);
     setNetworkError(null);
     if (localErrors.length > 0) {
       setErrors(localErrors);
       setLoading(false);
       return;
     }
-    const payload = {
+    const payload: ProblemPayload = {
       layers: parsedLayers,
       observations: observations.map(
         (o): ObservationInput => ({ lower: o.lower, upper: o.upper, weight: Number(o.weight) }),
@@ -129,6 +156,7 @@ export default function App() {
     try {
       const solution = await solveProblem(payload);
       setResult(solution);
+      setSubmittedPayload(payload);
       setErrors([]);
     } catch (err) {
       if (err instanceof SolveError) {
@@ -138,6 +166,31 @@ export default function App() {
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Clicking a strip in the canonical witness derives that layer's profile
+  // from the ORIGINAL ProblemIn payload; only the profile region changes.
+  const handleLayerClick = async (layerId: string) => {
+    if (!submittedPayload) return;
+    const seq = ++profileSeq.current;
+    setProfileTarget(layerId);
+    setProfileLoading(true);
+    setProfileData(null);
+    setProfileErrors(null);
+    try {
+      const profile = await fetchPlacementProfile(submittedPayload, layerId);
+      if (seq !== profileSeq.current) return; // a newer click superseded this one
+      setProfileData(profile);
+    } catch (err) {
+      if (seq !== profileSeq.current) return;
+      const errs: ValidationErrorItem[] =
+        err instanceof SolveError
+          ? err.errors
+          : [{ pointer: "", message: err instanceof Error ? err.message : String(err) }];
+      setProfileErrors(errs);
+    } finally {
+      if (seq === profileSeq.current) setProfileLoading(false);
     }
   };
 
@@ -228,8 +281,14 @@ export default function App() {
                 setLayerText("");
                 setObservations([]);
                 setResult(null);
+                setSubmittedPayload(null);
                 setErrors([]);
                 setNetworkError(null);
+                setProfileTarget(null);
+                setProfileData(null);
+                setProfileErrors(null);
+                setProfileLoading(false);
+                profileSeq.current = 0;
               }}>
               清空
             </button>
@@ -274,7 +333,21 @@ export default function App() {
                 )}
               </div>
 
-              <WitnessBlock title="规范见证 1（ASCII 最小最优排列）" witness={result.witness} />
+              <WitnessBlock
+                title="规范见证 1（ASCII 最小最优排列，点击图层查看层位剖面）"
+                witness={result.witness}
+                onLayerClick={handleLayerClick}
+                activeTarget={profileTarget}
+              />
+
+              {profileTarget && (
+                <ProfilePanel
+                  target={profileTarget}
+                  loading={profileLoading}
+                  profile={profileData}
+                  errors={profileErrors}
+                />
+              )}
 
               {result.status === "ambiguous" && result.second_witness && (
                 <details>
@@ -301,10 +374,14 @@ function WitnessBlock({
   title,
   witness,
   nested = false,
+  onLayerClick,
+  activeTarget,
 }: {
   title: string;
   witness: SolutionResponse["witness"];
   nested?: boolean;
+  onLayerClick?: (layerId: string) => void;
+  activeTarget?: string | null;
 }) {
   return (
     <div className={nested ? "witness nested" : "witness"}>
@@ -318,7 +395,12 @@ function WitnessBlock({
           </span>
         ))}
       </p>
-      <StackTrack order={witness.order} rows={witness.observations} />
+      <StackTrack
+        order={witness.order}
+        rows={witness.observations}
+        onLayerClick={onLayerClick}
+        activeTarget={activeTarget}
+      />
       <ObservationTable rows={witness.observations} totalCost={witness.cost} />
     </div>
   );

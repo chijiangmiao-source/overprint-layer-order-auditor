@@ -11,7 +11,9 @@ from __future__ import annotations
 import itertools
 import random
 
-from app.solver import evaluate_order, solve
+import pytest
+
+from app.solver import evaluate_order, placement_profile, solve
 
 
 def brute_force(layers, observations):
@@ -170,3 +172,117 @@ def test_reordering_inputs_is_invisible():
     shuffled_edges = list(reversed(edges))
     again = solve(shuffled_layers, shuffled_edges)
     assert again == base
+
+
+# ---------------------------------------------------------------------------
+# Placement profile (target pinned at each depth)
+# ---------------------------------------------------------------------------
+
+def brute_profile(layers, observations, target):
+    """Independent O(n!) reference: {depth: (min cost, ASCII-min order)}."""
+    per_depth = {}
+    for perm in itertools.permutations(sorted(layers)):
+        depth = perm.index(target)
+        total = sum(r["cost"] for r in evaluate_order(layers, observations, list(perm)))
+        per_depth.setdefault(depth, []).append((total, list(perm)))
+    out = {}
+    for depth, candidates in per_depth.items():
+        best = min(c for c, _ in candidates)
+        out[depth] = (best, sorted(p for c, p in candidates if c == best)[0])
+    return out
+
+
+def check_profile_case(layers, observations, target=None):
+    targets = [target] if target is not None else sorted(layers)
+    for t in targets:
+        result = placement_profile(layers, observations, t)
+        bf = brute_profile(layers, observations, t)
+        opt = solve(layers, observations)["cost"]
+
+        assert result["target"] == t
+        assert result["optimal_cost"] == opt
+        assert len(result["depths"]) == len(layers)
+
+        by_depth = {row["depth"]: row for row in result["depths"]}
+        assert sorted(by_depth) == list(range(len(layers)))
+        for depth in range(len(layers)):
+            row = by_depth[depth]
+            bcost, border = bf[depth]
+            assert row["cost"] == bcost
+            assert row["order"] == border
+            assert row["order"][depth] == t
+            assert row["delta"] == bcost - opt
+            assert row["delta"] >= 0
+        assert min(row["cost"] for row in result["depths"]) == opt
+        assert {row["depth"]: row["order"] for row in result["depths"]} == \
+            {d: o for d, (_, o) in bf.items()}
+
+
+def test_profile_exhaustive_n2_n3_all_graphs():
+    for n in (2, 3):
+        layers = [chr(ord("A") + i) for i in range(n)]
+        pairs = list(itertools.permutations(layers, 2))
+        weight_choices = [1, 1, 3, 8]
+        rng = random.Random(4242 + n)
+        for mask in range(1, 1 << len(pairs)):
+            edges = []
+            for k, (a, b) in enumerate(pairs):
+                if mask >> k & 1:
+                    edges.append((a, b, rng.choice(weight_choices)))
+            for t in layers:
+                check_profile_case(layers, edges, t)
+
+
+def test_profile_exhaustive_n4_random_instances():
+    rng = random.Random(202405)
+    layers = ["A", "B", "C", "D"]
+    pairs = list(itertools.permutations(layers, 2))
+    for _ in range(150):
+        edges = []
+        for a, b in pairs:
+            if rng.random() < 0.45:
+                edges.append((a, b, rng.randint(1, 12)))
+        if not edges:
+            continue
+        check_profile_case(layers, edges)  # all four targets each time
+
+
+def test_profile_greedy_trap_known_values():
+    edges = [
+        ("A", "B", 8), ("A", "C", 1), ("A", "D", 3),
+        ("B", "A", 1), ("B", "C", 7),
+        ("C", "A", 1), ("C", "D", 8),
+        ("D", "A", 9),
+    ]
+    layers = ["A", "B", "C", "D"]
+    profile = placement_profile(layers, edges, "C")
+    assert profile["optimal_cost"] == 11
+    by_depth = {row["depth"]: row for row in profile["depths"]}
+    # Global optimum A,B,C,D pins C at depth 2: delta 0 there, >0 elsewhere.
+    expected = {
+        0: (12, ["C", "D", "A", "B"]),
+        1: (12, ["B", "C", "D", "A"]),
+        2: (11, ["A", "B", "C", "D"]),
+        3: (13, ["D", "A", "B", "C"]),
+    }
+    for depth, (cost, order) in expected.items():
+        assert by_depth[depth]["cost"] == cost
+        assert by_depth[depth]["order"] == order
+        assert by_depth[depth]["delta"] == cost - 11
+    assert [d["order"][d["depth"]] for d in profile["depths"]] == ["C"] * 4
+
+
+def test_profile_unknown_target_raises():
+    with pytest.raises(ValueError):
+        placement_profile(["A", "B"], [("A", "B", 1)], "Z")
+
+
+def test_profile_reorder_invariant():
+    edges = [
+        ("A", "B", 8), ("A", "C", 1), ("A", "D", 3),
+        ("B", "A", 1), ("B", "C", 7),
+        ("C", "A", 1), ("C", "D", 8), ("D", "A", 9),
+    ]
+    base = placement_profile(["D", "A", "C", "B"], list(reversed(edges)), "A")
+    again = placement_profile(["A", "B", "C", "D"], edges, "A")
+    assert base == again

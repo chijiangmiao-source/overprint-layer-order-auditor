@@ -72,11 +72,13 @@ dp[S ∪ {j}] = min  dp[S] + add(j, S)
 .
 ├── backend/            FastAPI + Pydantic + 子集 DP
 │   ├── app/solver.py   精确整数子集 DP（2ⁿ 掩码，保留两条 ASCII 最小最优）
+│   │                   + placement_profile（前缀/后缀两次 2ⁿ⁻¹ DP 拼出全深度剖面）
 │   ├── app/models.py   模式与跨字段全量校验
-│   ├── app/main.py     POST /api/solve、GET /api/health
-│   └── tests/          全排列穷举核对、贪心陷阱、非等权环、对称并列、重排不变
+│   ├── app/main.py     POST /api/solve、POST /api/placement-profile、GET /api/health
+│   └── tests/          全排列穷举核对、贪心陷阱、非等权环、对称并列、重排不变、剖面
 ├── frontend/           React + TS + Vite
-│   └── src/components/ StackTrack.tsx（SVG 轨道）、ObservationTable.tsx
+│   └── src/components/ StackTrack.tsx（SVG 轨道，图层可点击）、ObservationTable.tsx、
+│                       ProfilePanel.tsx（派生的层位敏感性剖面区域）
 ├── web/                nginx 镜像（托管 dist + 反代 /api）
 ├── verify/             一次性验收：pytest 全量 + 端到端 HTTP 验收
 └── docker-compose.yml
@@ -92,7 +94,7 @@ docker compose up -d web        # 启动 api 与 web
 # 网页：http://localhost:8080
 # API 健康检查：http://localhost:8000/api/health（另含 /docs）
 
-docker compose run --rm verify  # 一次性验收：穷举测试 + 36 项端到端检查
+docker compose run --rm verify  # 一次性验收：穷举测试 + 134 项端到端检查
 ```
 
 `verify` 服务不会常驻：先运行后端全部 pytest（含小规模全排列穷举核对 DP），
@@ -143,6 +145,37 @@ npm run build    # 类型检查 + 产物到 dist/
 ```json
 { "errors": [ { "pointer": "/observations/3/upper", "message": "dangling reference to unknown layer 'X'" } ] }
 ```
+
+`POST /api/placement-profile`（层位敏感性剖面）
+
+装帧限制可能把某块色版钉死在指定深度。点击规范见证 SVG 中的任一图层后，
+前端以**原 ProblemIn 数据加一个 `target`** 调用本端点，一次返回该图层落在
+**每个**深度（0 = 最底层）时的最低总代价、相对原全局最优的增量 `delta`，
+以及该深度下 ASCII 字典序最小的排列：
+
+```json
+{
+  "target": "C",
+  "optimal_cost": 11,
+  "depths": [
+    {"depth": 0, "cost": 12, "delta": 1, "order": ["C", "D", "A", "B"]},
+    {"depth": 2, "cost": 11, "delta": 0, "order": ["A", "B", "C", "D"]}
+  ]
+}
+```
+
+- 返回的深度行数恒等于图层数，且每行 `order[depth] === target`；
+  `delta >= 0`，至少一个深度 `delta === 0`（全局最优必把目标放在某个深度）。
+- 算法**不逐深度重复 solve**：对其余 n−1 层做一遍底→顶的前缀 DP
+  （目标作为始终在其上方的虚拟下层）和一遍顶→底的“剥离”后缀 DP，
+  每个可行前缀子集把两侧缓存状态拼接一次即得该深度剖面；复用同一套
+  精确整数代价与 ASCII 排名规则。n=20 全双向图的整条剖面与一次 solve
+  同量级（两条 2ⁿ⁻¹ 扫描 ≈ 一条 2ⁿ 扫描）。
+- 未知 `target` 返回指向 `/target` 的 422（与其他校验错误合并、按
+  JSON Pointer 排序）；剖面加载/成功/失败只更新前端派生区域，
+  原求解见证保留；再次成功提交主问题会清除旧剖面。
+- 小规模用例同样以 n! 全排列独立核对每个深度的代价与字典序最小排列
+  （后端 pytest 与 `verify` 端到端验收均覆盖）。
 
 ## 测试与质量约束
 

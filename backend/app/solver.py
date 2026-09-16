@@ -29,7 +29,7 @@ the required id-sequence comparison, at a fraction of tuple memory.
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 
 def solve(
@@ -143,6 +143,175 @@ def solve(
         "second_cost": opt_cost,
         "second_order": to_ids(second_seq),
     }
+
+
+def placement_profile(
+    layers: Sequence[str],
+    observations: Sequence[Tuple[str, str, int]],
+    target: str,
+) -> dict:
+    """Sensitivity profile: optimum cost with ``target`` pinned at each depth.
+
+    For every depth ``d`` (0 = bottom, n-1 = top) this returns the minimum
+    total violation cost among permutations whose position ``d`` is
+    ``target``, the increment ``delta`` over the unrestricted global
+    optimum, and the ASCII-smallest permutation attaining that pinned
+    optimum.
+
+    The whole profile is built with *two* subset passes over the ``n-1``
+    other layers instead of re-running a full ``solve`` per depth:
+
+    * Forward pass ``fwd[P]``: cheapest (and ASCII-smallest) order of the
+      prefix set ``P`` below the target. Edges ``target -> j`` are always
+      violated there (the target is still above every prefix layer), so the
+      target acts as a lower rank that is never part of the built mask.
+    * Reverse "peel" pass ``rev[Q]``: cheapest order of a suffix set ``Q``
+      above the target, built from the top down -- when ``j`` is placed just
+      below an already-peeled (above) set ``R``, only edges ``i -> j`` with
+      ``i in R`` are violated.
+
+    Pinning the target at depth ``d`` with prefix ``P`` (``|P| = d``) and
+    suffix ``Q = others \\ P`` then only joins the two cached states::
+
+        total(d, P) = fwd[P] + add_target(P) + rev[Q]
+
+    where ``add_target(P)`` is the weight of edges ``i -> target`` whose
+    lower ``i`` is not in ``P``.  Costs split independently over the two
+    fixed subsets, so the ASCII-smallest pinned permutation is the
+    ASCII-smallest optimal prefix byte sequence, the target, and the
+    ASCII-smallest optimal suffix byte sequence.
+    """
+    if target not in set(layers):
+        raise ValueError(f"unknown target layer {target!r}")
+
+    # Compressed ranks over the n-1 non-target layers preserve ASCII order:
+    # deleting one element from a sorted sequence does not change the
+    # relative order of the rest.  Lower rank -1 encodes the target itself.
+    others = sorted(layer_id for layer_id in layers if layer_id != target)
+    n1 = len(others)
+    urank = {layer_id: i for i, layer_id in enumerate(others)}
+
+    # incoming[j] = list of (lower code, weight) for edges lower -> j.
+    incoming: List[List[Tuple[int, int]]] = [[] for _ in range(n1)]
+    incoming_target: List[Tuple[int, int]] = []
+    for lower_id, upper_id, weight in observations:
+        code = -1 if lower_id == target else urank[lower_id]
+        if upper_id == target:
+            incoming_target.append((urank[lower_id], weight))
+        else:
+            incoming[urank[upper_id]].append((code, weight))
+
+    size = 1 << n1
+    full = size - 1
+    INF = -1
+    rank_byte = [bytes((j,)) for j in range(n1)]
+    target_byte = bytes((n1,))  # sits at the fixed depth index in joins
+
+    # ---- forward pass: prefixes built bottom-to-top ---------------------
+    fwd: List[int] = [INF] * size
+    fwd[0] = 0
+    fbest: List[bytes | None] = [None] * size
+    fbest[0] = b""
+
+    for mask in range(size):
+        base = fwd[mask]
+        if base == INF:
+            continue
+        remaining = full ^ mask
+        while remaining:
+            bit = remaining & -remaining
+            remaining ^= bit
+            j = bit.bit_length() - 1
+            # A lower that is still unplaced (or that is the target, which
+            # never belongs to a prefix mask) forces a violation.
+            add = 0
+            for code, weight in incoming[j]:
+                if code < 0 or not ((mask >> code) & 1):
+                    add += weight
+            new_mask = mask | bit
+            cand_cost = base + add
+            cand_seq = fbest[mask] + rank_byte[j]
+            old = fwd[new_mask]
+            if old == INF or cand_cost < old or (
+                cand_cost == old and cand_seq < fbest[new_mask]
+            ):
+                fwd[new_mask] = cand_cost
+                fbest[new_mask] = cand_seq
+
+    # ---- reverse pass: suffixes peeled top-to-bottom --------------------
+    # rev[mask]: mask is the set already peeled above. Placing j just below
+    # it violates exactly the edges i -> j whose lower i is already peeled.
+    rev: List[int] = [INF] * size
+    rev[0] = 0
+    rbest: List[bytes | None] = [None] * size
+    rbest[0] = b""
+
+    for mask in range(size):
+        base = rev[mask]
+        if base == INF:
+            continue
+        remaining = full ^ mask
+        while remaining:
+            bit = remaining & -remaining
+            remaining ^= bit
+            j = bit.bit_length() - 1
+            add = 0
+            for code, weight in incoming[j]:
+                if code >= 0 and ((mask >> code) & 1):
+                    add += weight
+            new_mask = mask | bit
+            cand_cost = base + add
+            # j is immediately below every peeled layer in `mask`, so in
+            # bottom-to-top reading its byte precedes the stored suffix.
+            cand_seq = rank_byte[j] + rbest[mask]
+            old = rev[new_mask]
+            if old == INF or cand_cost < old or (
+                cand_cost == old and cand_seq < rbest[new_mask]
+            ):
+                rev[new_mask] = cand_cost
+                rbest[new_mask] = cand_seq
+
+    def to_ids(seq: bytes) -> List[str]:
+        return [others[r] for r in seq]
+
+    # ---- join the two cached states once per feasible prefix mask -------
+    pinned: List[Optional[Tuple[int, bytes]]] = [None] * (n1 + 1)
+    for pmask in range(size):
+        if fwd[pmask] == INF:
+            continue
+        qmask = full ^ pmask
+        at_target = 0
+        for code, weight in incoming_target:
+            if not ((pmask >> code) & 1):
+                at_target += weight
+        total = fwd[pmask] + at_target + rev[qmask]
+        seq = fbest[pmask] + target_byte + rbest[qmask]
+        depth = pmask.bit_count()
+        incumbent = pinned[depth]
+        if incumbent is None or total < incumbent[0] or (
+            total == incumbent[0] and seq < incumbent[1]
+        ):
+            pinned[depth] = (total, seq)
+
+    depths: List[dict] = []
+    # Every permutation pins the target at exactly one depth, so minimizing
+    # over the depth rows recovers the unrestricted global optimum -- no
+    # separate full solve pass is needed.
+    optimal_cost = min(cost for cost, _ in pinned)
+    for depth, (cost, seq) in enumerate(pinned):
+        prefix_seq = seq[:depth]
+        suffix_seq = seq[depth + 1:]
+        order = to_ids(prefix_seq) + [target] + to_ids(suffix_seq)
+        depths.append(
+            {
+                "depth": depth,
+                "cost": cost,
+                "delta": cost - optimal_cost,
+                "order": order,
+            }
+        )
+
+    return {"target": target, "optimal_cost": optimal_cost, "depths": depths}
 
 
 def evaluate_order(

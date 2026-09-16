@@ -136,6 +136,46 @@ tfoot td { background: #efe9db; font-weight: 600; }
 
 details summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: #7a5a18; padding: 6px 0; }
 
+/* Clickable layer strips in the canonical SVG witness */
+.layer-strip-clickable { transition: opacity 0.12s ease; }
+g[role="button"]:hover .layer-strip-clickable,
+g[role="button"]:focus-visible .layer-strip-clickable { opacity: 1; }
+g[role="button"]:focus-visible .layer-strip-clickable { stroke: var(--accent); stroke-width: 2.5px; }
+
+/* Derived placement-profile region */
+.profile-panel {
+  margin: 14px 0 6px;
+  border: 1px solid #d8c9a8;
+  border-radius: 10px;
+  background: #fbf7ec;
+  padding: 12px 14px;
+}
+.profile-panel h3 { margin: 2px 0 6px; font-size: 14.5px; }
+.profile-panel h3 code {
+  background: #efe7d4; border-radius: 5px; padding: 1px 7px; font-size: 13px;
+}
+.profile-status { color: var(--muted); font-size: 13px; padding: 8px 2px; }
+.profile-summary { font-size: 12.5px; color: #5c5448; margin: 6px 0 8px; }
+.profile-table tbody tr.profile-optimal { background: #e7f4ec; }
+.profile-table tbody tr.profile-penalized { background: #fdf6f4; }
+.order-chip.profile-target {
+  outline: 2px solid var(--accent);
+  background: #f6e0d2;
+}
+.profile-error {
+  background: var(--warn-bg); border: 1px solid #e6b8b0; border-radius: 8px;
+  padding: 9px 12px; font-size: 12.5px;
+}
+.profile-error ul { margin: 6px 0 0; padding-left: 0; list-style: none; }
+.profile-error li {
+  display: grid; grid-template-columns: 120px 1fr; gap: 10px;
+  padding: 2px 0; border-bottom: 1px dotted #e6c7c1;
+}
+.profile-error code {
+  background: #fff; border: 1px solid #e6c7c1; border-radius: 5px;
+  padding: 0 6px; font-size: 11.5px; height: fit-content;
+}
+
 footer { margin-top: 26px; color: var(--muted); font-size: 12px; line-height: 1.7; border-top: 1px solid var(--line); padding-top: 12px; }
 
 @media (max-width: 980px) {

@@ -40,3 +40,16 @@ export interface SolutionResponse {
   second_witness: Witness | null;
   layers: string[];
 }
+
+export interface ProfileDepth {
+  depth: number; // 0 = bottom, n-1 = top
+  cost: number; // minimum total cost with the target pinned at this depth
+  delta: number; // increment over the unrestricted global optimum
+  order: string[]; // bottom -> top; order[depth] === target
+}
+
+export interface PlacementProfileResponse {
+  target: string;
+  optimal_cost: number;
+  depths: ProfileDepth[];
+}

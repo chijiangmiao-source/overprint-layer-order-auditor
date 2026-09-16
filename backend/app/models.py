@@ -31,6 +31,16 @@ class ProblemIn(BaseModel):
     observations: List[ObservationIn]
 
 
+class PlacementProfileIn(BaseModel):
+    """A normal problem plus the layer whose depth is being probed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    layers: List[str]
+    observations: List[ObservationIn]
+    target: str
+
+
 class ValidationErrorItem(BaseModel):
     # RFC 6901 JSON Pointer, e.g. "/observations/3/upper".
     pointer: str
@@ -70,18 +80,38 @@ class SolutionOut(BaseModel):
     layers: List[str]
 
 
+class ProfileDepth(BaseModel):
+    """Best feasible permutation with the target pinned at this depth."""
+
+    depth: int
+    cost: int
+    delta: int
+    order: List[str]
+
+
+class PlacementProfileOut(BaseModel):
+    target: str
+    optimal_cost: int
+    depths: List[ProfileDepth]
+
+
 def _pointer(parts: List[Any]) -> str:
     if not parts:
         return ""
     return "/" + "/".join(str(p).replace("~", "~0").replace("/", "~1") for p in parts)
 
 
-def collect_semantic_errors(data: Any) -> List[ValidationErrorItem]:
+def collect_semantic_errors(data: Any, check_target: bool = False) -> List[ValidationErrorItem]:
     """Cross-field validation over the raw JSON body.
 
     Runs independently of Pydantic type/shape validation so that type
     errors and semantic errors are reported together in one response.
     Every invalid construct gets its own JSON Pointer.
+
+    With ``check_target`` set (placement-profile requests), a ``target``
+    string that is not among the listed layers is additionally reported at
+    ``/target`` -- mirroring the dangling-reference rule, and still
+    surfacing when some other field fails type validation.
     """
     errors: List[ValidationErrorItem] = []
 
@@ -195,5 +225,15 @@ def collect_semantic_errors(data: Any) -> List[ValidationErrorItem]:
                     )
                 else:
                     pairs.append(pair)
+
+    if check_target:
+        target = data.get("target")
+        if isinstance(target, str) and target not in listed:
+            errors.append(
+                ValidationErrorItem(
+                    pointer="/target",
+                    message=f"dangling reference to unknown layer {target!r}",
+                )
+            )
 
     return errors

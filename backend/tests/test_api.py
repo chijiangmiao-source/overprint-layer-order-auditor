@@ -227,3 +227,127 @@ def test_exact_integer_arithmetic_large_weights():
     assert isinstance(d["cost"], int)
     assert sum(row["cost"] for row in d["witness"]["observations"]) == d["cost"]
     assert elapsed < 30, f"20-layer DP too slow: {elapsed:.1f}s"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/placement-profile
+# ---------------------------------------------------------------------------
+
+PROFILE_PROBLEM = {
+    "layers": ["A", "B", "C", "D"],
+    "observations": [
+        {"lower": "A", "upper": "B", "weight": 8},
+        {"lower": "A", "upper": "C", "weight": 1},
+        {"lower": "A", "upper": "D", "weight": 3},
+        {"lower": "B", "upper": "A", "weight": 1},
+        {"lower": "B", "upper": "C", "weight": 7},
+        {"lower": "C", "upper": "A", "weight": 1},
+        {"lower": "C", "upper": "D", "weight": 8},
+        {"lower": "D", "upper": "A", "weight": 9},
+    ],
+}
+
+
+def post_profile(payload):
+    return client.post("/api/placement-profile", json=payload)
+
+
+def test_profile_shape_and_pin_constraints():
+    r = post_profile({**PROFILE_PROBLEM, "target": "C"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["target"] == "C"
+    assert d["optimal_cost"] == 11
+    assert [row["depth"] for row in d["depths"]] == [0, 1, 2, 3]
+    assert len(d["depths"] ) == 4
+    # Exactly one row per layer, and every reported order puts the target at
+    # exactly the depth of that row.
+    for row in d["depths"]:
+        assert len(row["order"]) == 4
+        assert row["order"][row["depth"]] == "C"
+        assert set(row["order"]) == {"A", "B", "C", "D"}
+        assert isinstance(row["cost"], int) and isinstance(row["delta"], int)
+        assert row["cost"] >= d["optimal_cost"]
+        assert row["delta"] == row["cost"] - d["optimal_cost"]
+    # The unrestricted optimum A,B,C,D sits at depth 2 with zero increment.
+    by_depth = {row["depth"]: row for row in d["depths"]}
+    assert by_depth[2]["cost"] == 11 and by_depth[2]["delta"] == 0
+    assert by_depth[2]["order"] == ["A", "B", "C", "D"]
+    assert all(row["delta"] > 0 for depth, row in by_depth.items() if depth != 2)
+
+
+def test_profile_costs_match_witness_recompute():
+    # The pinned cost must be the real violation sum of the reported order.
+    from app.solver import evaluate_order
+
+    triples = [(o["lower"], o["upper"], o["weight"]) for o in PROFILE_PROBLEM["observations"]]
+    d = post_profile({**PROFILE_PROBLEM, "target": "B"}).json()
+    for row in d["depths"]:
+        total = sum(x["cost"] for x in evaluate_order(PROFILE_PROBLEM["layers"], triples, row["order"]))
+        assert total == row["cost"]
+
+
+def test_profile_unknown_target_is_422_at_target_pointer():
+    r = post_profile({**PROFILE_PROBLEM, "target": "Z"})
+    assert r.status_code == 422
+    errors = r.json()["errors"]
+    pointers = [e["pointer"] for e in errors]
+    assert pointers == ["/target"], pointers
+    assert "Z" in errors[0]["message"]
+
+
+def test_profile_unknown_target_merges_with_other_errors_sorted():
+    payload = {
+        "layers": ["A", "B"],
+        "observations": [{"lower": "A", "upper": "B", "weight": 0}],
+        "target": "X",
+    }
+    r = post_profile(payload)
+    assert r.status_code == 422
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert pointers == sorted(pointers)
+    assert "/observations/0/weight" in pointers and "/target" in pointers
+
+
+def test_profile_rejects_invalid_problem_like_solve():
+    r = post_profile({"layers": ["A", "A"],
+                      "observations": [{"lower": "A", "upper": "A", "weight": 1}],
+                      "target": "A"})
+    assert r.status_code == 422
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/layers/1" in pointers and "/observations/0" in pointers
+
+
+def test_profile_rejects_bad_json_and_extra_fields():
+    r = client.post("/api/placement-profile", content=b"{bad",
+                    headers={"content-type": "application/json"})
+    assert r.status_code == 422
+    assert r.json()["errors"][0]["pointer"] == ""
+
+    r = post_profile({**PROFILE_PROBLEM, "target": "A", "extra": 1})
+    assert r.status_code == 422
+    assert any("extra" in e["pointer"] for e in r.json()["errors"])
+
+
+def test_profile_requires_target_field():
+    r = post_profile(PROFILE_PROBLEM)
+    assert r.status_code == 422
+    assert any(e["pointer"] == "/target" for e in r.json()["errors"])
+
+
+def test_profile_reorder_invariant():
+    a = post_profile({**PROFILE_PROBLEM, "target": "D"}).json()
+    shuffled = {
+        "layers": ["D", "A", "C", "B"],
+        "observations": list(reversed(PROFILE_PROBLEM["observations"])),
+        "target": "D",
+    }
+    b = post_profile(shuffled).json()
+    assert a == b
+
+
+def test_solve_still_ignores_target_field():
+    # /api/solve must keep its exact request contract: an unexpected field
+    # is rejected (it always was), proving no schema drift.
+    r = client.post("/api/solve", json={**PROFILE_PROBLEM, "target": "A"})
+    assert r.status_code == 422

@@ -1,8 +1,14 @@
+import type { KeyboardEvent } from "react";
 import type { ObservationResult } from "../types";
 
 interface StackTrackProps {
   order: string[]; // bottom -> top
   rows: ObservationResult[];
+  // When provided, every layer strip becomes a button that requests the
+  // layer's placement sensitivity profile.
+  onLayerClick?: (layerId: string) => void;
+  // Layer whose derived profile is currently shown (highlighted strip).
+  activeTarget?: string | null;
 }
 
 // Layer strips are stacked bottom-to-top; each observation is an arrow from
@@ -27,7 +33,7 @@ function trackColor(id: string, key: number): string {
   return PALETTE[(hash + key) % PALETTE.length];
 }
 
-export default function StackTrack({ order, rows }: StackTrackProps) {
+export default function StackTrack({ order, rows, onLayerClick, activeTarget }: StackTrackProps) {
   const n = order.length;
   const height = PAD_TOP + PAD_BOTTOM + n * TRACK_H + (n - 1) * GAP;
 
@@ -96,18 +102,47 @@ export default function StackTrack({ order, rows }: StackTrackProps) {
 
       {order.map((id, pos) => {
         const y = centerY(pos) - TRACK_H / 2;
+        const clickable = !!onLayerClick;
+        const isActive = activeTarget === id;
         return (
-          <g key={`${id}-${pos}`}>
+          <g
+            key={`${id}-${pos}`}
+            {...(clickable
+              ? {
+                  role: "button",
+                  "aria-label": `图层 ${id}：查看每个深度的最低代价剖面`,
+                  tabIndex: 0,
+                  style: { cursor: "pointer", outline: "none" },
+                  onClick: () => onLayerClick?.(id),
+                  onKeyDown: (e: KeyboardEvent) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onLayerClick?.(id);
+                    }
+                  },
+                }
+              : {})}
+          >
+            <title>
+              {clickable
+                ? `图层 ${id}（${pos === 0 ? "最底层" : pos === n - 1 ? "最顶层" : `第 ${pos + 1} 层`}）：点击查看层位敏感性剖面`
+                : id}
+            </title>
             <text x={LABEL_W - 6} y={centerY(pos) + 4} textAnchor="end"
-              fontSize="13" fontWeight={600} fill="#2b2b2b">
+              fontSize="13" fontWeight={600} fill="#2b2b2b"
+              {...(clickable ? { style: { cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted" } } : {})}>
               {id}
             </text>
             <rect x={LABEL_W} y={y} width={WIDTH - LABEL_W - 12} height={TRACK_H}
               rx={5} fill={trackColor(id, pos)} opacity={0.85}
-              stroke="#00000022" />
+              stroke={isActive ? "#23211e" : "#00000022"}
+              strokeWidth={isActive ? 2.5 : 1}
+              {...(clickable
+                ? { className: "layer-strip-clickable" }
+                : {})} />
             <text x={LABEL_W + 10} y={centerY(pos) + 4} fontSize="11"
-              fill="#ffffffdd" fontWeight={600}>
-              {`#${pos + 1} · ${pos === 0 ? "最底层" : pos === n - 1 ? "最顶层" : "中间层"}`}
+              fill="#ffffffdd" fontWeight={600} pointerEvents="none">
+              {`#${pos + 1} · ${pos === 0 ? "最底层" : pos === n - 1 ? "最顶层" : "中间层"}${clickable ? " · 点击查看层位剖面" : ""}`}
             </text>
           </g>
         );

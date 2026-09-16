@@ -10,6 +10,9 @@ installed dependencies. It exercises:
   4. An ambiguous instance returning the two ASCII-minimal optima.
   5. An invalid instance returning ALL errors, sorted by JSON Pointer.
   6. Witness rows re-summing exactly to the reported integer total.
+  7. The placement profile: one row per layer, target pinned at every
+     depth, costs/deltas/orders re-derived independently, and an unknown
+     target rejected with a 422 pointing at /target.
 
 Exits 0 only when every check passes.
 """
@@ -194,6 +197,86 @@ def main() -> int:
           (a["status"], a["cost"], a["order"]) == (b["status"], b["cost"], b["order"]),
           f'{a["status"]},{a["cost"]},{a["order"]} vs {b["status"]},{b["cost"]},{b["order"]}')
     check("reordered canonical witness identical", a["witness"] == b["witness"])
+
+    print("== 7. placement profile: one row per depth, target pinned ==")
+    import itertools
+
+    def violation_total(order, observations):
+        pos = {lid: i for i, lid in enumerate(order)}
+        return sum(w for lo, up, w in observations if pos[up] <= pos[lo])
+
+    for target in ("A", "B", "C", "D"):
+        status, data = post_json(
+            f"{WEB_BASE}/api/placement-profile", {**GREEDY_TRAP, "target": target}
+        )
+        check(f"[{target}] profile 200", status == 200, f"status={status} data={data}")
+        if status != 200:
+            continue
+        n = len(GREEDY_TRAP["layers"])
+        depths = data["depths"]
+        check(f"[{target}] exactly n rows (one per depth)", len(depths) == n,
+              f"got {len(depths)} for n={n}")
+        check(f"[{target}] optimal_cost matches /api/solve",
+              data["optimal_cost"] == a["cost"], f'{data["optimal_cost"]} vs {a["cost"]}')
+        depths_ok = all(row["depth"] == i for i, row in enumerate(depths))
+        check(f"[{target}] depths numbered 0..n-1", depths_ok, str([r["depth"] for r in depths]))
+        pin_ok = all(row["order"][row["depth"]] == target for row in depths)
+        check(f"[{target}] every order pins target at its depth", pin_ok)
+        perms_ok = all(
+            len(row["order"]) == n and set(row["order"]) == set(GREEDY_TRAP["layers"])
+            for row in depths
+        )
+        check(f"[{target}] every order is a permutation of the layers", perms_ok)
+
+        # Independent n! enumeration of the exact per-depth minima and the
+        # ASCII-smallest optimal pinned order.
+        triples = [(o["lower"], o["upper"], o["weight"])
+                   for o in GREEDY_TRAP["observations"]]
+        layer_ids = GREEDY_TRAP["layers"]
+        truth = {}
+        for perm in itertools.permutations(sorted(layer_ids)):
+            d = perm.index(target)
+            c = violation_total(perm, triples)
+            truth.setdefault(d, []).append((c, list(perm)))
+        for row in depths:
+            cands = truth[row["depth"]]
+            min_c = min(c for c, _ in cands)
+            min_order = sorted(p for c, p in cands if c == min_c)[0]
+            check(f"[{target}] depth {row['depth']} exact min cost",
+                  row["cost"] == min_c, f'{row["cost"]} vs {min_c}')
+            check(f"[{target}] depth {row['depth']} ascii-min optimal order",
+                  row["order"] == min_order, f'{row["order"]} vs {min_order}')
+            check(f"[{target}] depth {row['depth']} delta vs global optimum",
+                  row["delta"] == min_c - a["cost"],
+                  f'{row["delta"]} vs {min_c - a["cost"]}')
+            check(f"[{target}] depth {row['depth']} reported cost is real",
+                  violation_total(row["order"], triples) == row["cost"],
+                  str(row))
+
+    print("== 7b. profile unknown target -> 422 at /target ==")
+    status, data = post_json(f"{WEB_BASE}/api/placement-profile",
+                             {**GREEDY_TRAP, "target": "Z"})
+    check("unknown target -> 422", status == 422, str(status))
+    if status == 422:
+        pointers = [e["pointer"] for e in data["errors"]]
+        check("error points at /target", pointers == ["/target"], str(pointers))
+        check("errors pointer-sorted", pointers == sorted(pointers), str(pointers))
+
+    print("== 7c. profile inherits problem validation like /api/solve ==")
+    status, data = post_json(f"{WEB_BASE}/api/placement-profile",
+                             {"layers": ["A", "A"],
+                              "observations": [{"lower": "A", "upper": "A", "weight": 1}],
+                              "target": "X"})
+    check("invalid problem + unknown target -> 422", status == 422, str(status))
+    if status == 422:
+        pointers = [e["pointer"] for e in data["errors"]]
+        check("target and problem errors merged + sorted",
+              pointers == sorted(pointers) and "/target" in pointers
+              and "/layers/1" in pointers, str(pointers))
+
+    print("== 7d. /api/solve request contract unchanged ==")
+    status, _ = post_json(f"{WEB_BASE}/api/solve", {**GREEDY_TRAP, "target": "A"})
+    check("extra target field rejected by /api/solve", status == 422, str(status))
 
     print()
     print(f"== {checks - len(failures)}/{checks} checks passed ==")

@@ -1,0 +1,50 @@
+name: woodblock-audit
+
+services:
+  api:
+    build:
+      context: ./backend
+    image: woodblock-audit-api:latest
+    environment:
+      # The browser talks to the same origin via nginx; CORS mainly matters
+      # for the local `npm run dev` workflow.
+      CORS_ORIGINS: "http://localhost:5173,http://localhost:8080,http://127.0.0.1:5173"
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2).status == 200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: woodblock-audit-web:latest
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot acceptance: runs the exhaustive pytest suite, then live
+  # end-to-end checks against web + api, and exits 0/1.
+  verify:
+    build:
+      context: .
+      dockerfile: verify/Dockerfile
+    image: woodblock-audit-verify:latest
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    restart: "no"

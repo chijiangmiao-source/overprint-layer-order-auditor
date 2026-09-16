@@ -1,0 +1,12 @@
+# Build contexts for web/ and verify/ are the repository root.
+.git
+.github
+**/__pycache__
+**/*.pyc
+.venv
+venv
+node_modules
+frontend/dist
+backend/.pytest_cache
+**/.pytest_cache
+*.log

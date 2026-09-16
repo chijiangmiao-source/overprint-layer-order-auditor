@@ -57,8 +57,20 @@ export default function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileData, setProfileData] = useState<PlacementProfileResponse | null>(null);
   const [profileErrors, setProfileErrors] = useState<ValidationErrorItem[] | null>(null);
-  // Latest click wins if two profile requests are in flight.
+  // Monotonic token of the latest profile interaction. It is only ever
+  // bumped (never reset to 0): clearing or re-submitting bumps it too, so a
+  // late response from an earlier click/session can never land on a fresh
+  // panel (resetting to 0 could collide with a new click's sequence).
   const profileSeq = useRef(0);
+
+  // Make any in-flight profile response obsolete and empty the region.
+  const invalidateProfile = () => {
+    profileSeq.current += 1;
+    setProfileTarget(null);
+    setProfileData(null);
+    setProfileErrors(null);
+    setProfileLoading(false);
+  };
 
   // Parsed layers are derived state, so reordering/editing cannot leave a
   // stale derived copy behind.
@@ -134,13 +146,11 @@ export default function App() {
     // Any (re-)submission first clears stale output and stale errors: an
     // invalid answer never leaves an old optimum on screen. The derived
     // profile belongs to the previous witness, so it is cleared as well
-    // (a fresh successful solve never carries an old target's profile).
+    // (a fresh solve never carries an old target's profile); bumping the
+    // token also retires any profile response still in flight.
     setResult(null);
     setSubmittedPayload(null);
-    setProfileTarget(null);
-    setProfileData(null);
-    setProfileErrors(null);
-    setProfileLoading(false);
+    invalidateProfile();
     setNetworkError(null);
     if (localErrors.length > 0) {
       setErrors(localErrors);
@@ -180,7 +190,15 @@ export default function App() {
     setProfileErrors(null);
     try {
       const profile = await fetchPlacementProfile(submittedPayload, layerId);
-      if (seq !== profileSeq.current) return; // a newer click superseded this one
+      if (seq !== profileSeq.current) return; // a newer click/reset superseded this one
+      // Defense in depth: never render a profile under another layer's name
+      // even if a stale/mismatched response slips through.
+      if (profile.target !== layerId) {
+        setProfileErrors([
+          { pointer: "", message: `返回剖面属于图层 ${profile.target}，与所点图层 ${layerId} 不一致` },
+        ]);
+        return;
+      }
       setProfileData(profile);
     } catch (err) {
       if (seq !== profileSeq.current) return;
@@ -284,11 +302,7 @@ export default function App() {
                 setSubmittedPayload(null);
                 setErrors([]);
                 setNetworkError(null);
-                setProfileTarget(null);
-                setProfileData(null);
-                setProfileErrors(null);
-                setProfileLoading(false);
-                profileSeq.current = 0;
+                invalidateProfile();
               }}>
               清空
             </button>

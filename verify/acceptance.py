@@ -274,6 +274,18 @@ def main() -> int:
               pointers == sorted(pointers) and "/target" in pointers
               and "/layers/1" in pointers, str(pointers))
 
+    # Unknown target must not be hidden when `observations` itself fails its
+    # type check (the semantic validator returns early on a non-list).
+    status, data = post_json(f"{WEB_BASE}/api/placement-profile",
+                             {"layers": ["A", "B"], "observations": "not-a-list",
+                              "target": "Z"})
+    check("malformed observations + unknown target -> 422", status == 422, str(status))
+    if status == 422:
+        pointers = [e["pointer"] for e in data["errors"]]
+        check("both /observations type error and /target reported",
+              "/observations" in pointers and "/target" in pointers
+              and pointers == sorted(pointers), str(pointers))
+
     print("== 7d. /api/solve request contract unchanged ==")
     status, _ = post_json(f"{WEB_BASE}/api/solve", {**GREEDY_TRAP, "target": "A"})
     check("extra target field rejected by /api/solve", status == 422, str(status))

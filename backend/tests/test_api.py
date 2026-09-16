@@ -309,6 +309,33 @@ def test_profile_unknown_target_merges_with_other_errors_sorted():
     assert "/observations/0/weight" in pointers and "/target" in pointers
 
 
+def test_profile_unknown_target_reported_when_observations_malformed():
+    # Regression: when `observations` fails its *type* check the semantic
+    # validator returns early; the unknown-target error (which only needs the
+    # layers list) must still be reported in the same response.
+    r = post_profile({"layers": ["A", "B"], "observations": "not-a-list", "target": "Z"})
+    assert r.status_code == 422
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/observations" in pointers, pointers  # Pydantic type error
+    assert "/target" in pointers, pointers  # unknown target must not be hidden
+    assert pointers == sorted(pointers), pointers
+
+    # Same guarantee when observations is missing entirely.
+    r = post_profile({"layers": ["A", "B"], "target": "Z"})
+    assert r.status_code == 422
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert "/observations" in pointers and "/target" in pointers
+    assert pointers == sorted(pointers)
+
+    # An invalid (non-string) target reports only the Pydantic type error.
+    r = post_profile({"layers": ["A", "B"],
+                      "observations": [{"lower": "A", "upper": "B", "weight": 1}],
+                      "target": 7})
+    assert r.status_code == 422
+    pointers = [e["pointer"] for e in r.json()["errors"]]
+    assert pointers == ["/target"], pointers
+
+
 def test_profile_rejects_invalid_problem_like_solve():
     r = post_profile({"layers": ["A", "A"],
                       "observations": [{"lower": "A", "upper": "A", "weight": 1}],

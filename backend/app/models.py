@@ -164,6 +164,21 @@ def collect_semantic_errors(data: Any, check_target: bool = False) -> List[Valid
             else:
                 seen[raw_id] = i
 
+    # ---- target (placement-profile requests only) -----------------------
+    # Checked before the observations section on purpose: the observations
+    # branch returns early when the field is not a list (its type error is
+    # reported by Pydantic), and an early return must not hide the unknown
+    # target. Only the listed-layer universe is needed here.
+    if check_target:
+        target = data.get("target")
+        if isinstance(target, str) and target not in listed:
+            errors.append(
+                ValidationErrorItem(
+                    pointer="/target",
+                    message=f"dangling reference to unknown layer {target!r}",
+                )
+            )
+
     # ---- observations -----------------------------------------------------
     # Independent of the layers checks: an empty/missing observation list
     # (and bad references inside it) must be reported even when `layers`
@@ -225,15 +240,5 @@ def collect_semantic_errors(data: Any, check_target: bool = False) -> List[Valid
                     )
                 else:
                     pairs.append(pair)
-
-    if check_target:
-        target = data.get("target")
-        if isinstance(target, str) and target not in listed:
-            errors.append(
-                ValidationErrorItem(
-                    pointer="/target",
-                    message=f"dangling reference to unknown layer {target!r}",
-                )
-            )
 
     return errors
